@@ -18,8 +18,9 @@ variable "boundary_policy_arn" {
 }
 
 variable "siem_instance_type" {
-  type    = string
-  default = "t3.large"
+  description = "The account's free plan allows only free-tier types; m7i-flex.large is the one with 8 GiB"
+  type        = string
+  default     = "m7i-flex.large"
 }
 
 variable "home_soc_lab_ref" {

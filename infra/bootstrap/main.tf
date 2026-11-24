@@ -290,7 +290,7 @@ data "aws_iam_policy_document" "deploy" {
     condition {
       test     = "StringEquals"
       variable = "iam:PassedToService"
-      values   = ["ecs-tasks.amazonaws.com", "ec2.amazonaws.com", "cloudtrail.amazonaws.com"]
+      values   = ["ecs-tasks.amazonaws.com", "ec2.amazonaws.com", "cloudtrail.amazonaws.com", "vpc-flow-logs.amazonaws.com"]
     }
   }
   statement {
