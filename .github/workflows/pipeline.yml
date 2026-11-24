@@ -121,9 +121,15 @@ jobs:
         env:
           REPO: ${{ vars.ECR_REPOSITORY_URL }}
         run: |
-          aws ecr get-login-password | docker login --username AWS --password-stdin "${REPO%%/*}"
-          docker tag "sentinel-agent:${GITHUB_SHA}" "$REPO:${GITHUB_SHA}"
-          docker push "$REPO:${GITHUB_SHA}"
+          # Tags are immutable. A re-run of the same commit deploys the image already pushed
+          # for it instead of overwriting the tag.
+          if ! aws ecr describe-images --repository-name sentinel-agent --image-ids imageTag="${GITHUB_SHA}" >/dev/null 2>&1; then
+            aws ecr get-login-password | docker login --username AWS --password-stdin "${REPO%%/*}"
+            docker tag "sentinel-agent:${GITHUB_SHA}" "$REPO:${GITHUB_SHA}"
+            docker push "$REPO:${GITHUB_SHA}"
+          else
+            echo "tag ${GITHUB_SHA} already in the registry; deploying that image"
+          fi
           digest="$(aws ecr describe-images --repository-name sentinel-agent --image-ids imageTag="${GITHUB_SHA}" \
             --query 'imageDetails[0].imageDigest' --output text)"
           echo "image=$REPO@$digest" >> "$GITHUB_OUTPUT"
