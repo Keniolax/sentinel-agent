@@ -1,1 +1,9 @@
-# Trivy image findings accepted with a reason, one ID per line with a comment above it.
+# Trivy image findings accepted with a reason. Each entry expires, so the gate fails again
+# unless someone re-reads the reason and renews it.
+
+# CVE-2026-78661: denial of service in golang.org/x/net/html (0.61.0, fixed in 0.62.0),
+# compiled into the Ollama 0.40.13 binary. Ollama listens only on 127.0.0.1 inside a task with
+# no inbound network, and only the agent's own code talks to it, with chat JSON, never HTML.
+# Upgrading Ollama would break the exact-replay pin that weeks 16 and 17 proved and week 19
+# needs. Revisit when the capstone ends.
+CVE-2026-78661 exp:2026-12-31
