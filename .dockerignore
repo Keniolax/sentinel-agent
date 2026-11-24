@@ -1,0 +1,11 @@
+.git
+.venv
+.terraform
+infra
+siem
+scripts
+tests
+kb
+finance
+*.md
+.github
