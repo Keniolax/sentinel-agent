@@ -7,7 +7,12 @@ ARG MODEL_DIGEST=65ec06548149b04c096a120e4a6da9d4017ea809c91734ea5631e89f96ddc57
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl zstd \
     && rm -rf /var/lib/apt/lists/*
 COPY image/install-ollama.sh /tmp/install-ollama.sh
-RUN OLLAMA_HOME_DIR=/opt/ollama OLLAMA_TARBALL=/tmp/ollama.tar.zst sh /tmp/install-ollama.sh
+RUN OLLAMA_HOME_DIR=/opt/ollama OLLAMA_TARBALL=/tmp/ollama.tar.zst sh /tmp/install-ollama.sh \
+    && rm -rf /tmp/ollama.tar.zst /opt/ollama/unused-backends \
+    && find /opt/ollama/lib/ollama -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + \
+    && ls -la /opt/ollama/lib/ollama && du -sh /opt/ollama
+# The agent runs on CPU only. The release's GPU library folders (CUDA, ROCm, Vulkan) and the
+# CPU libraries other than haswell are deleted above, which keeps the image small enough to scan.
 # Pull the model once at build time and refuse to continue unless its registry digest
 # matches the pin, so every task runs the same weights.
 ENV OLLAMA_MODELS=/opt/models

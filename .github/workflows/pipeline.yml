@@ -101,7 +101,10 @@ jobs:
         with:
           persist-credentials: false
       - name: Build the image
-        run: docker build --platform linux/amd64 -f image/Dockerfile -t "sentinel-agent:${GITHUB_SHA}" .
+        run: |
+          docker build --platform linux/amd64 -f image/Dockerfile -t "sentinel-agent:${GITHUB_SHA}" .
+          docker image ls "sentinel-agent:${GITHUB_SHA}"
+          df -h / /mnt
       - name: Trivy image scan (hard fail on fixable high and critical)
         run: |
           # The image holds the model (about 1 GB). Trivy unpacks it to a temporary file,
