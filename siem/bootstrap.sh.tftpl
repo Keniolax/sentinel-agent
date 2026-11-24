@@ -1,0 +1,31 @@
+#!/bin/bash
+# EC2 user data for the SIEM host. Installs Docker, fetches home-soc-lab at a pinned commit,
+# and starts only its Wazuh indexer and manager with the capstone overlay.
+set -euxo pipefail
+exec > >(tee /var/log/sentinel-bootstrap.log) 2>&1
+
+sysctl -w vm.max_map_count=262144
+echo 'vm.max_map_count=262144' > /etc/sysctl.d/99-wazuh.conf
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y docker.io docker-compose-v2 git
+systemctl enable --now docker
+
+mkdir -p /opt/sentinel
+echo '${compose_b64}' | base64 -d > /opt/sentinel/compose.sentinel.yaml
+echo '${config_b64}' | base64 -d > /opt/sentinel/sentinel-config.sh
+echo '${wodle_b64}' | base64 -d > /opt/sentinel/aws-wodle.xml
+echo '${rules_b64}' | base64 -d > /opt/sentinel/local_rules.xml
+chmod 0755 /opt/sentinel/sentinel-config.sh
+
+git clone https://github.com/Keniolax/home-soc-lab.git /opt/home-soc-lab
+cd /opt/home-soc-lab
+git checkout --detach '${home_soc_lab_ref}'
+test "$(git rev-parse HEAD)" = '${home_soc_lab_ref}'
+scripts/init-env.sh
+sed -i 's/^INDEXER_HEAP=.*/INDEXER_HEAP=2g/' .env
+
+export COMPOSE_FILE=compose.yaml:/opt/sentinel/compose.sentinel.yaml
+docker compose up -d --wait --wait-timeout 600 init-certs init-users wazuh.indexer wazuh.manager
+touch /opt/sentinel/ready

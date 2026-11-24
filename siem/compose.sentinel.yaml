@@ -1,0 +1,9 @@
+# Overlay on home-soc-lab's compose.yaml for the Sentinel Agent SIEM host. It adds one
+# container-init script to the Wazuh manager, which turns on the AWS reader and loads the
+# capstone's rules. The manager reaches AWS with the EC2 instance role (IMDSv2, hop limit 2).
+services:
+  wazuh.manager:
+    volumes:
+      - /opt/sentinel/sentinel-config.sh:/etc/cont-init.d/1-1-sentinel:ro
+      - /opt/sentinel/aws-wodle.xml:/opt/sentinel/aws-wodle.xml:ro
+      - /opt/sentinel/local_rules.xml:/opt/sentinel/local_rules.xml:ro

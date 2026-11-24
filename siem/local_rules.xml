@@ -1,0 +1,9 @@
+<!-- Week 18: rules that show the capstone's logs reached the SIEM. Week 19 adds detections. -->
+<group name="sentinel,aws,">
+  <rule id="100810" level="3">
+    <if_sid>80200</if_sid>
+    <field name="aws.eventSource">^s3.amazonaws.com$</field>
+    <field name="aws.requestParameters.bucketName">^sentinel-(kb|finance)-</field>
+    <description>Sentinel: S3 data event on a capstone bucket ($(aws.eventName))</description>
+  </rule>
+</group>

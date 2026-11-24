@@ -1,0 +1,18 @@
+<!-- sentinel-aws-wodle: read the capstone's CloudTrail bucket and the agent's log group -->
+<ossec_config>
+  <wodle name="aws-s3">
+    <disabled>no</disabled>
+    <interval>5m</interval>
+    <run_on_start>yes</run_on_start>
+    <skip_on_error>yes</skip_on_error>
+    <bucket type="cloudtrail">
+      <name>${trail_bucket}</name>
+      <aws_account_id>${account}</aws_account_id>
+      <regions>${region}</regions>
+    </bucket>
+    <service type="cloudwatchlogs">
+      <aws_log_groups>${log_group}</aws_log_groups>
+      <regions>${region}</regions>
+    </service>
+  </wodle>
+</ossec_config>

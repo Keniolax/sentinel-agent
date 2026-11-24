@@ -1,0 +1,153 @@
+name: pipeline
+
+# Every push and pull request runs the gate. Only a push to main builds the image and
+# deploys, and only after the gate passes. The deploy jobs get short-lived AWS credentials
+# through GitHub's OIDC token; the repository stores no AWS key. The gate holds no AWS
+# access at all.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  AWS_REGION: us-east-1
+  TERRAFORM_VERSION: "1.14.1"
+  CHECKOV_VERSION: "3.3.30"
+  SEMGREP_VERSION: "1.183.0"
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests
+        run: |
+          pip install --quiet --require-hashes -r requirements-dev.lock
+          python -m pytest -q
+
+      - name: Terraform format and validate
+        run: |
+          terraform fmt -check -recursive infra
+          for stack in infra/bootstrap infra/main; do
+            terraform -chdir=$stack init -backend=false -input=false
+            terraform -chdir=$stack validate
+          done
+
+      - name: Checkov (hard fail)
+        run: |
+          pip install --quiet "checkov==${CHECKOV_VERSION}"
+          checkov -d infra --compact --quiet
+
+      - name: Every scanner suppression carries a reason
+        run: python3 scripts/check-skips.py infra
+
+      - name: Trivy config and dependency scan (hard fail)
+        run: |
+          ./scripts/install-trivy.sh "$HOME/.local/bin"
+          export PATH="$HOME/.local/bin:$PATH"
+          trivy config infra --quiet --exit-code 1
+          trivy fs . --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --quiet --exit-code 1
+
+      - name: Semgrep (hard fail)
+        run: |
+          pip install --quiet "semgrep==${SEMGREP_VERSION}"
+          semgrep scan --config p/python --config p/dockerfile --config p/bash --disable-nosem \
+            --metrics off --error --timeout 30 app image scripts
+
+      - name: Gitleaks over the whole history (hard fail)
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o gitleaks.tgz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tgz" | sha256sum -c -
+          tar -xzf gitleaks.tgz gitleaks
+          cd "$GITHUB_WORKSPACE"
+          "$RUNNER_TEMP/gitleaks" git --no-banner --redact --exit-code 1 .
+
+  build:
+    needs: gate
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      image: ${{ steps.push.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the image
+        run: docker build --platform linux/amd64 -f image/Dockerfile -t "sentinel-agent:${GITHUB_SHA}" .
+      - name: Trivy image scan (hard fail on fixable high and critical)
+        run: |
+          ./scripts/install-trivy.sh "$HOME/.local/bin"
+          "$HOME/.local/bin/trivy" image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
+            --ignorefile image/.trivyignore "sentinel-agent:${GITHUB_SHA}"
+      - name: AWS credentials for the deploy role
+        run: scripts/gha-aws-login.sh "${{ vars.DEPLOY_ROLE_ARN }}"
+      - name: Push by digest
+        id: push
+        env:
+          REPO: ${{ vars.ECR_REPOSITORY_URL }}
+        run: |
+          aws ecr get-login-password | docker login --username AWS --password-stdin "${REPO%%/*}"
+          docker tag "sentinel-agent:${GITHUB_SHA}" "$REPO:${GITHUB_SHA}"
+          docker push "$REPO:${GITHUB_SHA}"
+          digest="$(aws ecr describe-images --repository-name sentinel-agent --image-ids imageTag="${GITHUB_SHA}" \
+            --query 'imageDetails[0].imageDigest' --output text)"
+          echo "image=$REPO@$digest" >> "$GITHUB_OUTPUT"
+          echo "pushed $REPO@$digest"
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+      - name: AWS credentials for the deploy role
+        run: scripts/gha-aws-login.sh "${{ vars.DEPLOY_ROLE_ARN }}"
+      - name: Terraform apply
+        env:
+          TF_VAR_agent_image: ${{ needs.build.outputs.image }}
+          TF_VAR_boundary_policy_arn: ${{ vars.BOUNDARY_POLICY_ARN }}
+        run: |
+          terraform -chdir=infra/main init -input=false \
+            -backend-config="bucket=${{ vars.STATE_BUCKET }}" \
+            -backend-config="kms_key_id=${{ vars.STATE_KMS_KEY }}"
+          terraform -chdir=infra/main apply -input=false -auto-approve

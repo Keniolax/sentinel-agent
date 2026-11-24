@@ -14,9 +14,22 @@ resource "aws_kms_key" "state" {
   description             = "sentinel-agent Terraform state"
   enable_key_rotation     = true
   deletion_window_in_days = 7
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AccountAdmin"
+      Effect    = "Allow"
+      Principal = { AWS = "${local.arn}:iam::${local.account}:root" }
+      Action    = "kms:*"
+      Resource  = "*"
+    }]
+  })
 }
 
 resource "aws_s3_bucket" "state" {
+  # checkov:skip=CKV_AWS_18:State bucket; every write comes from Terraform, and the bucket is versioned
+  # checkov:skip=CKV_AWS_144:One-region lab; versioning covers a bad write, replication would double the cost
+  # checkov:skip=CKV2_AWS_62:No consumer for object events on the state bucket
   bucket        = "sentinel-tfstate-${local.account}"
   force_destroy = true
 }
@@ -34,6 +47,17 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
       kms_master_key_id = aws_kms_key.state.arn
     }
     bucket_key_enabled = true
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "state" {
+  bucket = aws_s3_bucket.state.id
+  rule {
+    id     = "expire-old-state"
+    status = "Enabled"
+    filter {}
+    noncurrent_version_expiration { noncurrent_days = 90 }
+    abort_incomplete_multipart_upload { days_after_initiation = 7 }
   }
 }
 
@@ -66,6 +90,16 @@ resource "aws_kms_key" "ecr" {
   description             = "sentinel-agent image registry"
   enable_key_rotation     = true
   deletion_window_in_days = 7
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AccountAdmin"
+      Effect    = "Allow"
+      Principal = { AWS = "${local.arn}:iam::${local.account}:root" }
+      Action    = "kms:*"
+      Resource  = "*"
+    }]
+  })
 }
 
 resource "aws_ecr_repository" "agent" {
@@ -101,6 +135,8 @@ resource "aws_iam_openid_connect_provider" "github" {
 # The most any role that CI creates may ever do. CI must attach it to every role it makes,
 # so a deploy cannot hand a new role more than the app and the SIEM need.
 resource "aws_iam_policy" "boundary" {
+  # checkov:skip=CKV_AWS_290:A permissions boundary is a ceiling, not a grant; each role's own policy scopes the resources
+  # checkov:skip=CKV_AWS_355:Same reason: the boundary lists actions any sentinel role may hold, and the Deny keeps S3 to sentinel-* buckets
   name        = "gha-sentinel-boundary"
   description = "Permissions boundary for every sentinel-* role"
   policy = jsonencode({
