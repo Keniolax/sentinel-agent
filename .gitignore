@@ -1,0 +1,15 @@
+# Secrets and local state never go in git.
+.env
+*.pem
+*.tfstate
+*.tfstate.*
+*.tfvars
+!example.tfvars
+.terraform/
+crash.log
+# Python
+.venv/
+__pycache__/
+*.egg-info/
+# Local evidence downloads that hold raw logs
+/out/
