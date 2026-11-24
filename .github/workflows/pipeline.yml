@@ -104,8 +104,12 @@ jobs:
         run: docker build --platform linux/amd64 -f image/Dockerfile -t "sentinel-agent:${GITHUB_SHA}" .
       - name: Trivy image scan (hard fail on fixable high and critical)
         run: |
+          # The image holds the model (about 1 GB). Trivy unpacks it to a temporary file,
+          # which overflows the runner's root disk, so it works on /mnt instead.
+          sudo mkdir -p /mnt/trivy && sudo chown "$USER" /mnt/trivy
+          export TMPDIR=/mnt/trivy
           ./scripts/install-trivy.sh "$HOME/.local/bin"
-          "$HOME/.local/bin/trivy" image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
+          "$HOME/.local/bin/trivy" image --cache-dir /mnt/trivy/cache --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
             --ignorefile image/.trivyignore "sentinel-agent:${GITHUB_SHA}"
       - name: AWS credentials for the deploy role
         run: scripts/gha-aws-login.sh "${{ vars.DEPLOY_ROLE_ARN }}"
