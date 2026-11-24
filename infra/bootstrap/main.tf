@@ -26,6 +26,7 @@ resource "aws_kms_key" "state" {
   })
 }
 
+# trivy:ignore:AVD-AWS-0089 State bucket; every write comes from Terraform, and the bucket is versioned
 resource "aws_s3_bucket" "state" {
   # checkov:skip=CKV_AWS_18:State bucket; every write comes from Terraform, and the bucket is versioned
   # checkov:skip=CKV_AWS_144:One-region lab; versioning covers a bad write, replication would double the cost
@@ -242,7 +243,7 @@ data "aws_iam_policy_document" "deploy" {
   }
   statement {
     sid       = "LabBuckets"
-    actions   = ["s3:*"]
+    actions   = ["s3:CreateBucket", "s3:Get*", "s3:List*", "s3:Put*", "s3:Delete*"]
     resources = ["${local.arn}:s3:::${local.scope}*", "${local.arn}:s3:::${local.scope}*/*"]
   }
   statement {

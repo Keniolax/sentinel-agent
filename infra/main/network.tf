@@ -41,6 +41,7 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
+# trivy:ignore:AVD-AWS-0104 Egress is HTTPS only; ECR, S3 and CloudWatch Logs are public endpoints, and VPC endpoints to narrow it cost about $7 a month each
 resource "aws_security_group" "agent" {
   # checkov:skip=CKV2_AWS_5:ECS attaches this group at run-task time (scripts/ask.sh); no Terraform resource holds a running task
   name        = "sentinel-agent"
@@ -55,6 +56,7 @@ resource "aws_security_group" "agent" {
   }
 }
 
+# trivy:ignore:AVD-AWS-0104 Egress is HTTPS and HTTP only, to AWS endpoints, GitHub, the image registry and the Ubuntu mirror; no NAT or endpoints in this lab
 resource "aws_security_group" "siem" {
   name        = "sentinel-siem"
   description = "SIEM host: no inbound; SSM, S3, CloudWatch Logs, image and package downloads out"

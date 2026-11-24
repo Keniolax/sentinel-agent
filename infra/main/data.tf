@@ -197,6 +197,7 @@ resource "aws_s3_object" "finance" {
 
 # --- CloudTrail ---------------------------------------------------------------------------
 
+# trivy:ignore:AVD-AWS-0162 The SIEM reads the trail from S3 with its own role; a CloudWatch copy would duplicate it
 resource "aws_cloudtrail" "trail" {
   # checkov:skip=CKV2_AWS_10:The SIEM reads the trail from S3 with its own role; a CloudWatch copy would duplicate it
   # checkov:skip=CKV_AWS_252:No SNS consumer; the SIEM polls the bucket every five minutes
