@@ -13,7 +13,8 @@ RUN OLLAMA_HOME_DIR=/opt/ollama OLLAMA_TARBALL=/tmp/ollama.tar.zst sh /tmp/insta
 ENV OLLAMA_MODELS=/opt/models
 RUN /opt/ollama/bin/ollama serve >/tmp/serve.log 2>&1 & \
     for i in $(seq 1 30); do curl -fsS http://127.0.0.1:11434/api/version >/dev/null && break; sleep 1; done; \
-    /opt/ollama/bin/ollama pull "$MODEL" \
+    ok=; for attempt in 1 2 3 4 5; do /opt/ollama/bin/ollama pull "$MODEL" && ok=1 && break; sleep $((attempt * 15)); done; \
+    test -n "$ok" \
     && got=$(curl -fsS http://127.0.0.1:11434/api/tags | python3 -c "import json,sys; print([m['digest'] for m in json.load(sys.stdin)['models'] if m['name']=='$MODEL'][0])") \
     && echo "$MODEL digest $got" && test "$got" = "$MODEL_DIGEST"
 
