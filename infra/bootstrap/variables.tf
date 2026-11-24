@@ -8,3 +8,15 @@ variable "github_repo" {
   type        = string
   default     = "Keniolax/sentinel-agent"
 }
+
+# GitHub's OIDC subject names the owner and repository by name and by numeric ID. Pinning the
+# IDs means a repository deleted and re-created under the same name cannot deploy.
+variable "github_owner_id" {
+  type    = string
+  default = "314053048"
+}
+
+variable "github_repo_id" {
+  type    = string
+  default = "1470747646"
+}
