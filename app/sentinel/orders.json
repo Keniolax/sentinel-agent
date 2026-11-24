@@ -1,0 +1,5 @@
+{
+ "LK-55120": {"order_id": "LK-55120", "status": "shipped", "carrier": "UPS", "eta": "2026-11-27", "items": ["Ridge 2 tent"]},
+ "LK-55121": {"order_id": "LK-55121", "status": "processing", "eta": "2026-11-30", "items": ["Trail stove", "Fuel canister"]},
+ "LK-55122": {"order_id": "LK-55122", "status": "delivered", "delivered": "2026-11-20", "items": ["Down sleeping bag"]}
+}
