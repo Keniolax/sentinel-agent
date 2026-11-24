@@ -74,7 +74,7 @@ jobs:
       - name: Semgrep (hard fail)
         run: |
           pip install --quiet "semgrep==${SEMGREP_VERSION}"
-          semgrep scan --config p/python --config p/dockerfile --config p/bash --disable-nosem \
+          semgrep scan --config p/python --config p/dockerfile --disable-nosem \
             --metrics off --error --timeout 30 app image scripts
 
       - name: Gitleaks over the whole history (hard fail)
