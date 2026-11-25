@@ -12,7 +12,9 @@ NUM_CTX = 8192
 class Ollama:
     def __init__(self, model=None, host=None, temperature=0.0, seed=42):
         self.name = model or os.environ.get("MODEL", "qwen2.5:1.5b")
-        self.host = (host or os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")).rstrip("/")
+        host = (host or os.environ.get("OLLAMA_HOST", "127.0.0.1:11434")).rstrip("/")
+        # OLLAMA_HOST is shared with `ollama serve`, which takes host:port with no scheme.
+        self.host = host if "://" in host else f"http://{host}"
         self.temperature = float(os.environ.get("TEMPERATURE", temperature))
         self.seed = int(os.environ.get("SEED", seed))
 

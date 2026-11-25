@@ -29,8 +29,10 @@ while :; do
 done
 echo "execution $status"
 
-# Console logs reach the workspace a few minutes after the execution ends.
-for _ in $(seq 1 30); do
+# Console logs reach the workspace a few minutes after the execution ends. A failed
+# execution never writes an answer line, so wait less for it.
+tries=30; [ "$status" = Succeeded ] || tries=6
+for _ in $(seq 1 "$tries"); do
   lines="$(la_query "ContainerAppConsoleLogs | where Log has '$run_id' | order by TimeGenerated asc | project Log")"
   if python3 -c '
 import json, sys
