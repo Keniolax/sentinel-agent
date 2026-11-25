@@ -33,9 +33,11 @@ variable "network_watcher_name" {
 }
 
 variable "siem_vm_size" {
-  description = "Wazuh's indexer and manager need about 8 GB of memory"
+  # Wazuh's indexer and manager need about 8 GB of memory. Standard_B2ms had no capacity in
+  # eastus2 on 2026-11-25 (SkuNotAvailable); B2as_v2 has the same 2 vCPUs and 8 GB.
+  description = "VM size for the SIEM: 2 vCPUs and 8 GB"
   type        = string
-  default     = "Standard_B2ms"
+  default     = "Standard_B2as_v2"
 }
 
 variable "home_soc_lab_ref" {
