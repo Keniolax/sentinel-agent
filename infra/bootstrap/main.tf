@@ -214,3 +214,29 @@ resource "azurerm_network_watcher" "lab" {
   location            = var.location
   tags                = local.tags
 }
+
+# --- Microsoft Defender for Cloud (the GuardDuty counterpart) -----------------------------
+
+# Defender for Storage watches every data account for unusual access, and Defender for Servers
+# watches the SIEM VM. Their alerts go to the subscription's activity log (Security category),
+# which the main stack already exports to the lab workspace. Both plans are free for the first
+# 30 days of the subscription's trial; destroying this stack sets them back to Free.
+#
+# Creating the storage plan turns on two paid extensions by default: on-upload malware
+# scanning (billed per GB) and sensitive-data discovery. Leaving them out of the resource
+# does not turn them off (seen on 2026-11-25), so a create-time step turns both off.
+resource "azurerm_security_center_subscription_pricing" "storage" {
+  tier          = "Standard"
+  resource_type = "StorageAccounts"
+  subplan       = "DefenderForStorageV2"
+
+  provisioner "local-exec" {
+    command = "az security pricing create -n StorageAccounts --tier standard --subplan DefenderForStorageV2 --extensions name=OnUploadMalwareScanning isEnabled=False --extensions name=SensitiveDataDiscovery isEnabled=False -o none"
+  }
+}
+
+resource "azurerm_security_center_subscription_pricing" "servers" {
+  tier          = "Standard"
+  resource_type = "VirtualMachines"
+  subplan       = "P1"
+}

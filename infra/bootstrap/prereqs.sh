@@ -5,7 +5,7 @@
 set -euo pipefail
 for ns in Microsoft.App Microsoft.ContainerRegistry Microsoft.Compute Microsoft.Insights \
   Microsoft.KeyVault Microsoft.ManagedIdentity Microsoft.Network Microsoft.OperationalInsights \
-  Microsoft.Storage; do
+  Microsoft.Security Microsoft.Storage; do
   az provider register --namespace "$ns" --wait
   echo "$ns $(az provider show --namespace "$ns" --query registrationState -o tsv)"
 done
