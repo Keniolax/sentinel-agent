@@ -1,7 +1,7 @@
 """The Sentinel Agent: answers one customer-support question with three read-only tools.
 
-Every model request, tool call and answer is written as one JSON line on stdout. In ECS the
-`awslogs` driver ships stdout to CloudWatch Logs, where the SIEM reads it.
+Every model request, tool call and answer is written as one JSON line on stdout. Container
+Apps ships stdout to Log Analytics (ContainerAppConsoleLogs), where the SIEM's collector reads it.
 """
 
 import hashlib
@@ -58,7 +58,7 @@ def ask(question, model, tools, run_id=None):
                 result = json.dumps({"error": str(exc)})
                 log("tool_call", run_id=run_id, step=step, tool=name, args=arguments, decision="denied",
                     reason=str(exc))
-            except Exception as exc:  # an AWS or network error: the model gets no detail
+            except Exception as exc:  # an Azure or network error: the model gets no detail
                 result = json.dumps({"error": "the tool failed"})
                 log("tool_call", run_id=run_id, step=step, tool=name, args=arguments, decision="error",
                     reason=type(exc).__name__)

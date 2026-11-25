@@ -1,8 +1,8 @@
 """The agent's three tools and the checks that run before each one.
 
 The model proposes a tool call. Code decides whether it runs. A call that fails a check is
-logged as denied and the model gets a short error, never the data. IAM gives the same limit
-a second time: the task role can read only the knowledge-base prefix.
+logged as denied and the model gets a short error, never the data. Azure RBAC gives the same
+limit a second time: the job's identity can read only the knowledge-base container.
 """
 
 import json
@@ -44,26 +44,27 @@ def _args(arguments, allowed):
 
 
 class Tools:
-    def __init__(self, s3, bucket, orders_url):
-        self.s3 = s3
-        self.bucket = bucket
+    """store: an object with list(prefix, limit) -> [keys] and get(key, max_bytes) -> bytes.
+    The real one is blob.BlobStore; the tests pass a fake."""
+
+    def __init__(self, store, container, orders_url):
+        self.store = store
+        self.container = container
         self.orders_url = orders_url.rstrip("/")
 
     def run(self, name, arguments):
         """Return (result_text, log_fields). Raise Denied when a check refuses the call."""
         if name == "kb_list":
             _args(arguments, [])
-            resp = self.s3.list_objects_v2(Bucket=self.bucket, Prefix=KB_PREFIX, MaxKeys=MAX_LIST)
-            keys = [o["Key"] for o in resp.get("Contents", []) if KEY_RE.match(o["Key"])]
-            return json.dumps(keys), {"bucket": self.bucket, "prefix": KB_PREFIX, "count": len(keys)}
+            keys = [k for k in self.store.list(KB_PREFIX, MAX_LIST) if KEY_RE.match(k)]
+            return json.dumps(keys), {"container": self.container, "prefix": KB_PREFIX, "count": len(keys)}
         if name == "kb_get":
             key = _args(arguments, ["key"]).get("key")
             if not isinstance(key, str) or not KEY_RE.match(key) or ".." in key:
                 raise Denied("key must be a knowledge-base key such as kb/returns.md")
-            obj = self.s3.get_object(Bucket=self.bucket, Key=key)
-            body = obj["Body"].read(MAX_OBJECT_BYTES + 1)
-            text = body[:MAX_OBJECT_BYTES].decode("utf-8", errors="replace")
-            return text, {"bucket": self.bucket, "key": key, "bytes": len(body[:MAX_OBJECT_BYTES])}
+            body = self.store.get(key, MAX_OBJECT_BYTES)[:MAX_OBJECT_BYTES]
+            text = body.decode("utf-8", errors="replace")
+            return text, {"container": self.container, "key": key, "bytes": len(body)}
         if name == "orders_lookup":
             order_id = _args(arguments, ["order_id"]).get("order_id")
             if not isinstance(order_id, str) or not ORDER_RE.match(order_id):
@@ -78,5 +79,9 @@ class Tools:
         raise Denied(f"unknown tool {name!r}")
 
 
-def from_env(s3):
-    return Tools(s3, os.environ["KB_BUCKET"], os.environ.get("ORDERS_URL", "http://127.0.0.1:8081"))
+def from_env():
+    from .blob import BlobStore
+
+    container = os.environ["KB_CONTAINER"]
+    store = BlobStore.from_managed_identity(os.environ["KB_ACCOUNT_URL"], container, os.environ["AZURE_CLIENT_ID"])
+    return Tools(store, container, os.environ.get("ORDERS_URL", "http://127.0.0.1:8081"))

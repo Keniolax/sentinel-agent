@@ -1,5 +1,5 @@
 #!/bin/bash
-# EC2 user data for the SIEM host. Installs Docker, fetches home-soc-lab at a pinned commit,
+# Custom data (cloud-init) for the SIEM VM. Installs Docker, fetches home-soc-lab at a pinned commit,
 # and starts only its Wazuh indexer and manager with the capstone overlay.
 set -euxo pipefail
 exec > >(tee /var/log/sentinel-bootstrap.log) 2>&1
@@ -15,9 +15,44 @@ systemctl enable --now docker
 mkdir -p /opt/sentinel
 echo '${compose_b64}' | base64 -d > /opt/sentinel/compose.sentinel.yaml
 echo '${config_b64}' | base64 -d > /opt/sentinel/sentinel-config.sh
-echo '${wodle_b64}' | base64 -d > /opt/sentinel/aws-wodle.xml
 echo '${rules_b64}' | base64 -d > /opt/sentinel/local_rules.xml
 chmod 0755 /opt/sentinel/sentinel-config.sh
+
+# The collector: managed identity -> Log Analytics -> /var/log/sentinel/azure.json.
+install -d -m 0755 /var/log/sentinel /var/lib/sentinel-collector
+touch /var/log/sentinel/azure.json && chmod 0644 /var/log/sentinel/azure.json
+echo '${collector_b64}' | base64 -d > /usr/local/bin/sentinel-collector
+chmod 0755 /usr/local/bin/sentinel-collector
+cat > /etc/sentinel-collector.env <<ENV
+WORKSPACE_ID=${workspace_id}
+CLIENT_ID=${client_id}
+ENV
+cat > /etc/systemd/system/sentinel-collector.service <<'UNIT'
+[Unit]
+Description=Copy the lab's Log Analytics rows into /var/log/sentinel/azure.json
+After=network-online.target
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/sentinel-collector.env
+ExecStart=/usr/bin/python3 /usr/local/bin/sentinel-collector
+DynamicUser=no
+ProtectSystem=strict
+ReadWritePaths=/var/log/sentinel /var/lib/sentinel-collector
+ProtectHome=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+UNIT
+cat > /etc/systemd/system/sentinel-collector.timer <<'UNIT'
+[Unit]
+Description=Run the sentinel collector every minute
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+[Install]
+WantedBy=timers.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now sentinel-collector.timer
 
 git clone https://github.com/Keniolax/home-soc-lab.git /opt/home-soc-lab
 cd /opt/home-soc-lab

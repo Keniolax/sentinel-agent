@@ -1,33 +1,31 @@
 #!/usr/bin/env bash
-# Prove that one agent run reached the SIEM: its own log lines (through CloudWatch Logs)
-# and the CloudTrail data event for the object it read (through the trail bucket).
-# Runs a read-only command on the SIEM host through SSM and polls until both appear.
+# Prove that one agent run reached the SIEM: the run's own log lines (from the job's console
+# logs) and the blob reads its identity made (from the storage account's resource logs). Runs
+# a read-only probe on the SIEM VM through Run Command and polls until all four counts are
+# above zero.
 #   scripts/verify-siem.sh <run_id> [timeout_minutes]
 set -euo pipefail
 run_id="${1:?usage: scripts/verify-siem.sh <run_id> [timeout_minutes]}"
 limit="${2:-30}"
-instance="$(terraform -chdir="$(dirname "$0")/../infra/main" output -raw siem_instance_id)"
-kb_bucket="$(terraform -chdir="$(dirname "$0")/../infra/main" output -raw kb_bucket)"
+. "$(dirname "$0")/lab.sh"
+agent="$(az identity show -g "$RG" -n id-sentinel-agent --query principalId -o tsv)"
 probe=$(cat <<PROBE
 cd /opt/home-soc-lab && export COMPOSE_FILE=compose.yaml:/opt/sentinel/compose.sentinel.yaml
-a=\$(docker compose exec -T wazuh.manager grep -c '$run_id' /var/ossec/logs/archives/archives.json || true)
-c=\$(docker compose exec -T wazuh.manager grep -c '"eventName":"GetObject".*$kb_bucket\|$kb_bucket.*"eventName":"GetObject"' /var/ossec/logs/archives/archives.json || true)
-r=\$(docker compose exec -T wazuh.manager grep -c '"id":"100810"' /var/ossec/logs/alerts/alerts.json || true)
-echo "agent_lines=\$a cloudtrail_getobject=\$c rule_100810_alerts=\$r"
+m() { docker compose exec -T wazuh.manager "\$@"; }
+a=\$(m grep -c '$run_id' /var/ossec/logs/archives/archives.json || true)
+b=\$(m grep '"OperationName":"GetBlob"' /var/ossec/logs/archives/archives.json | grep -c '$agent' || true)
+r1=\$(m grep -c '"id":"100810"' /var/ossec/logs/alerts/alerts.json || true)
+r2=\$(m grep '"id":"100811"' /var/ossec/logs/alerts/alerts.json | grep -c '$run_id' || true)
+echo "agent_lines=\$a agent_blob_reads=\$b rule_100810_alerts=\$r1 rule_100811_run_alerts=\$r2"
 PROBE
 )
 deadline=$(( $(date +%s) + limit * 60 ))
 while :; do
-  cmd="$(aws ssm send-command --instance-ids "$instance" --document-name AWS-RunShellScript \
-    --parameters "commands=[$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$probe")]" \
-    --query Command.CommandId --output text)"
-  sleep 5
-  aws ssm wait command-executed --command-id "$cmd" --instance-id "$instance" 2>/dev/null || true
-  line="$(aws ssm get-command-invocation --command-id "$cmd" --instance-id "$instance" \
-    --query StandardOutputContent --output text | tail -1)"
-  echo "$(date -u +%H:%M:%S) $line"
-  if [[ "$line" =~ agent_lines=([1-9][0-9]*)\ cloudtrail_getobject=([1-9][0-9]*) ]]; then
-    echo "PASS: run $run_id and its CloudTrail data event are in the SIEM"; exit 0
+  line="$(az vm run-command invoke -g "$RG" -n "$VM" --command-id RunShellScript --scripts "$probe" \
+    --query 'value[0].message' -o tsv | grep -o 'agent_lines=.*' | tail -1 || true)"
+  echo "$(date -u +%H:%M:%S) ${line:-no answer from the VM yet}"
+  if [[ "$line" =~ agent_lines=([1-9][0-9]*)\ agent_blob_reads=([1-9][0-9]*)\ rule_100810_alerts=([1-9][0-9]*)\ rule_100811_run_alerts=([1-9][0-9]*) ]]; then
+    echo "PASS: run $run_id, its identity's blob reads, and both capstone rules are in the SIEM"; exit 0
   fi
   [ "$(date +%s)" -lt "$deadline" ] || { echo "FAIL: not in the SIEM after $limit minutes"; exit 1; }
   sleep 60

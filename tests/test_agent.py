@@ -1,4 +1,3 @@
-import io
 import json
 import threading
 from http.server import ThreadingHTTPServer
@@ -9,17 +8,19 @@ from sentinel import agent, orders_api
 from sentinel.tools import Tools
 
 
-class FakeS3:
+class FakeStore:
+    """Stands in for blob.BlobStore and records every call that would reach storage."""
+
     def __init__(self, objects):
         self.objects, self.calls = objects, []
 
-    def list_objects_v2(self, **kw):
-        self.calls.append(("list", kw))
-        return {"Contents": [{"Key": k} for k in self.objects if k.startswith(kw["Prefix"])]}
+    def list(self, prefix, limit):
+        self.calls.append(("list", prefix, limit))
+        return [k for k in self.objects if k.startswith(prefix)][:limit]
 
-    def get_object(self, **kw):
-        self.calls.append(("get", kw))
-        return {"Body": io.BytesIO(self.objects[kw["Key"]].encode())}
+    def get(self, key, max_bytes):
+        self.calls.append(("get", key, max_bytes))
+        return self.objects[key].encode()[:max_bytes]
 
 
 class ScriptedModel:
@@ -51,87 +52,87 @@ def orders_url():
 
 
 @pytest.fixture
-def s3():
-    return FakeS3({"kb/returns.md": "Returns within 30 days.", "kb/shipping.md": "Ships in 2 days."})
+def store():
+    return FakeStore({"kb/returns.md": "Returns within 30 days.", "kb/shipping.md": "Ships in 2 days."})
 
 
 def events(capsys):
     return [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
 
 
-def test_allowed_read_reaches_s3_and_the_model(capsys, s3, orders_url):
+def test_allowed_read_reaches_storage_and_the_model(capsys, store, orders_url):
     model = ScriptedModel(call("kb_get", key="kb/returns.md"), answer("30 days."))
-    assert agent.ask("Return window?", model, Tools(s3, "kb-bucket", orders_url), run_id="r1") == "30 days."
-    assert s3.calls == [("get", {"Bucket": "kb-bucket", "Key": "kb/returns.md"})]
+    assert agent.ask("Return window?", model, Tools(store, "kb", orders_url), run_id="r1") == "30 days."
+    assert store.calls == [("get", "kb/returns.md", 8000)]
     assert model.requests[1][-1] == {"role": "tool", "content": "Returns within 30 days.", "tool_name": "kb_get"}
     tool = [e for e in events(capsys) if e["event"] == "tool_call"][0]
-    assert (tool["decision"], tool["key"], tool["bucket"], tool["run_id"]) == ("allowed", "kb/returns.md", "kb-bucket", "r1")
+    assert (tool["decision"], tool["key"], tool["container"], tool["run_id"]) == ("allowed", "kb/returns.md", "kb", "r1")
 
 
 @pytest.mark.parametrize("key", [
     "finance/payroll-2026-11.csv", "kb/../finance/payroll-2026-11.csv", "kb/a/../../finance/x",
-    "/kb/returns.md", "kb/", "s3://other-bucket/kb/returns.md", "KB/returns.md", "kb//returns.md", 7,
+    "/kb/returns.md", "kb/", "https://other.blob.core.windows.net/kb/returns.md", "KB/returns.md", "kb//returns.md", 7,
 ])
-def test_key_outside_the_knowledge_base_is_denied_before_s3(capsys, s3, orders_url, key):
+def test_key_outside_the_knowledge_base_is_denied_before_storage(capsys, store, orders_url, key):
     model = ScriptedModel(call("kb_get", key=key), answer("done"))
-    agent.ask("q", model, Tools(s3, "kb-bucket", orders_url))
-    assert s3.calls == []
+    agent.ask("q", model, Tools(store, "kb", orders_url))
+    assert store.calls == []
     tool = [e for e in events(capsys) if e["event"] == "tool_call"][0]
     assert tool["decision"] == "denied"
     assert "error" in json.loads(model.requests[1][-1]["content"])
 
 
 @pytest.mark.parametrize("name, arguments", [
-    ("s3_get_object", {"bucket": "finance", "key": "payroll.csv"}),
-    ("kb_get", {"key": "kb/returns.md", "bucket": "finance"}),
+    ("blob_get", {"container": "finance", "key": "records/payroll.csv"}),
+    ("kb_get", {"key": "kb/returns.md", "container": "finance"}),
     ("kb_list", {"prefix": "finance/"}),
     ("orders_lookup", {"order_id": "LK-55120/../admin"}),
 ])
-def test_unknown_tool_or_extra_argument_is_denied(capsys, s3, orders_url, name, arguments):
+def test_unknown_tool_or_extra_argument_is_denied(capsys, store, orders_url, name, arguments):
     model = ScriptedModel(call(name, **arguments), answer("done"))
-    agent.ask("q", model, Tools(s3, "kb-bucket", orders_url))
-    assert s3.calls == []
+    agent.ask("q", model, Tools(store, "kb", orders_url))
+    assert store.calls == []
     assert [e["decision"] for e in events(capsys) if e["event"] == "tool_call"] == ["denied"]
 
 
 def test_list_stays_on_the_knowledge_base_prefix(capsys, orders_url):
-    s3 = FakeS3({"kb/returns.md": "x", "finance/payroll.csv": "y"})
+    store = FakeStore({"kb/returns.md": "x", "records/payroll.csv": "y"})
     model = ScriptedModel(call("kb_list"), answer("done"))
-    agent.ask("q", model, Tools(s3, "kb-bucket", orders_url))
-    assert s3.calls == [("list", {"Bucket": "kb-bucket", "Prefix": "kb/", "MaxKeys": 50})]
+    agent.ask("q", model, Tools(store, "kb", orders_url))
+    assert store.calls == [("list", "kb/", 50)]
     assert json.loads(model.requests[1][-1]["content"]) == ["kb/returns.md"]
 
 
-def test_order_lookup_calls_the_internal_api(capsys, s3, orders_url):
+def test_order_lookup_calls_the_internal_api(capsys, store, orders_url):
     model = ScriptedModel(call("orders_lookup", order_id="LK-55120"), answer("Shipped."))
-    agent.ask("Where is LK-55120?", model, Tools(s3, "kb-bucket", orders_url))
+    agent.ask("Where is LK-55120?", model, Tools(store, "kb", orders_url))
     assert json.loads(model.requests[1][-1]["content"])["status"] == "shipped"
     tool = [e for e in events(capsys) if e["event"] == "tool_call"][0]
     assert (tool["decision"], tool["http_status"]) == ("allowed", 200)
 
 
 def test_a_failing_tool_gives_the_model_no_detail(capsys, orders_url):
-    class Broken(FakeS3):
-        def get_object(self, **kw):
-            raise RuntimeError("AccessDenied for arn:aws:iam::111122223333:role/x")
+    class Broken(FakeStore):
+        def get(self, key, max_bytes):
+            raise RuntimeError("AuthorizationPermissionMismatch for principal 00000000-0000-0000-0000-000000000000")
 
     model = ScriptedModel(call("kb_get", key="kb/returns.md"), answer("done"))
-    agent.ask("q", model, Tools(Broken({}), "kb-bucket", orders_url))
+    agent.ask("q", model, Tools(Broken({}), "kb", orders_url))
     assert json.loads(model.requests[1][-1]["content"]) == {"error": "the tool failed"}
     tool = [e for e in events(capsys) if e["event"] == "tool_call"][0]
     assert (tool["decision"], tool["reason"]) == ("error", "RuntimeError")
 
 
-def test_the_loop_stops_after_four_steps(capsys, s3, orders_url):
+def test_the_loop_stops_after_four_steps(capsys, store, orders_url):
     model = ScriptedModel(*[call("kb_list")] * 4)
-    assert agent.ask("q", model, Tools(s3, "kb-bucket", orders_url)) == "I could not finish that request."
+    assert agent.ask("q", model, Tools(store, "kb", orders_url)) == "I could not finish that request."
     assert len(model.requests) == 4
     assert events(capsys)[-1]["stopped"] == "max_steps"
 
 
-def test_logs_hold_hashes_not_the_question_or_answer(capsys, s3, orders_url):
+def test_logs_hold_hashes_not_the_question_or_answer(capsys, store, orders_url):
     model = ScriptedModel(answer("secret answer text"))
-    agent.ask("my private question", model, Tools(s3, "kb-bucket", orders_url))
+    agent.ask("my private question", model, Tools(store, "kb", orders_url))
     out = json.dumps(events(capsys))
     assert "my private question" not in out and "secret answer text" not in out
     assert agent.sha256("my private question") in out

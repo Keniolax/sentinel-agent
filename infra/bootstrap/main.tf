@@ -1,320 +1,216 @@
-data "aws_caller_identity" "me" {}
-data "aws_partition" "p" {}
+data "azurerm_client_config" "me" {}
 
 locals {
-  account = data.aws_caller_identity.me.account_id
-  arn     = "arn:${data.aws_partition.p.partition}"
-  # Every role, policy, instance profile and bucket that CI may manage starts with this.
-  scope = "sentinel-"
+  # Storage account and registry names are global and allow only lowercase letters and
+  # digits. A short hash of the subscription ID makes them unique without a random provider.
+  suffix = substr(sha1(var.subscription_id), 0, 6)
+  tags   = { lab = "seceng-bootcamp-week-18", project = "sentinel-agent" }
+  sub    = "/subscriptions/${var.subscription_id}"
+}
+
+# The bootstrap group holds what outlives the lab: Terraform state, the image registry and the
+# deploy identity. The lab group starts empty; CI fills it and may change nothing else.
+resource "azurerm_resource_group" "bootstrap" {
+  name     = "rg-sentinel-bootstrap"
+  location = var.location
+  tags     = local.tags
+}
+
+resource "azurerm_resource_group" "lab" {
+  name     = "rg-sentinel-lab"
+  location = var.location
+  tags     = local.tags
 }
 
 # --- Terraform state for the main stack -------------------------------------------------
 
-resource "aws_kms_key" "state" {
-  description             = "sentinel-agent Terraform state"
-  enable_key_rotation     = true
-  deletion_window_in_days = 7
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid       = "AccountAdmin"
-      Effect    = "Allow"
-      Principal = { AWS = "${local.arn}:iam::${local.account}:root" }
-      Action    = "kms:*"
-      Resource  = "*"
-    }]
-  })
-}
+# trivy:ignore:AZU-0012 GitHub-hosted runners have no fixed address, so the state account keeps a public endpoint; shared keys are off and every request needs an Entra ID token
+# trivy:ignore:AZU-0057 Classic Storage Analytics logging; every change to the state account is in the activity log, and the account has no queues
+# trivy:ignore:AZU-0058 One-region lab; blob versioning covers a bad write, and geo-replication would double the cost
+# trivy:ignore:AZU-0060 Microsoft-managed keys plus infrastructure encryption; a customer key needs a Key Vault with purge protection, which outlives the lab by at least 7 days
+resource "azurerm_storage_account" "state" {
+  # checkov:skip=CKV_AZURE_206:One-region lab; blob versioning covers a bad write, and geo-replication would double the cost
+  # checkov:skip=CKV2_AZURE_33:A private endpoint costs about $7 a month and GitHub-hosted runners could not reach it
+  # checkov:skip=CKV_AZURE_59:GitHub-hosted runners have no fixed address; shared keys are off and every request needs an Entra ID token
+  # checkov:skip=CKV2_AZURE_1:Microsoft-managed keys plus infrastructure encryption; a customer key needs a Key Vault with purge protection, which outlives the lab by at least 7 days
+  # checkov:skip=CKV_AZURE_33:The account has no queues
+  name                              = "stsentineltf${local.suffix}"
+  resource_group_name               = azurerm_resource_group.bootstrap.name
+  location                          = var.location
+  account_tier                      = "Standard"
+  account_replication_type          = "LRS"
+  min_tls_version                   = "TLS1_2"
+  https_traffic_only_enabled        = true
+  shared_access_key_enabled         = false
+  default_to_oauth_authentication   = true
+  allow_nested_items_to_be_public   = false
+  local_user_enabled                = false
+  infrastructure_encryption_enabled = true
+  cross_tenant_replication_enabled  = false
+  public_network_access             = "Enabled"
 
-# trivy:ignore:AVD-AWS-0089 State bucket; every write comes from Terraform, and the bucket is versioned
-resource "aws_s3_bucket" "state" {
-  # checkov:skip=CKV_AWS_18:State bucket; every write comes from Terraform, and the bucket is versioned
-  # checkov:skip=CKV_AWS_144:One-region lab; versioning covers a bad write, replication would double the cost
-  # checkov:skip=CKV2_AWS_62:No consumer for object events on the state bucket
-  bucket        = "sentinel-tfstate-${local.account}"
-  force_destroy = true
-}
-
-resource "aws_s3_bucket_versioning" "state" {
-  bucket = aws_s3_bucket.state.id
-  versioning_configuration { status = "Enabled" }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
-  bucket = aws_s3_bucket.state.id
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.state.arn
-    }
-    bucket_key_enabled = true
+  blob_properties {
+    versioning_enabled = true
+    delete_retention_policy { days = 30 }
+    container_delete_retention_policy { days = 30 }
   }
-}
-
-resource "aws_s3_bucket_lifecycle_configuration" "state" {
-  bucket = aws_s3_bucket.state.id
-  rule {
-    id     = "expire-old-state"
-    status = "Enabled"
-    filter {}
-    noncurrent_version_expiration { noncurrent_days = 90 }
-    abort_incomplete_multipart_upload { days_after_initiation = 7 }
+  sas_policy {
+    expiration_period = "00.01:00:00"
   }
+  tags = local.tags
 }
 
-resource "aws_s3_bucket_public_access_block" "state" {
-  bucket                  = aws_s3_bucket.state.id
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
+resource "azurerm_storage_container" "state" {
+  # checkov:skip=CKV2_AZURE_21:The state account is written only by Terraform; its activity log records each change to the account
+  name                  = "tfstate"
+  storage_account_id    = azurerm_storage_account.state.id
+  container_access_type = "private"
 }
 
-resource "aws_s3_bucket_policy" "state" {
-  bucket = aws_s3_bucket.state.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid       = "TLSOnly"
-      Effect    = "Deny"
-      Principal = "*"
-      Action    = "s3:*"
-      Resource  = [aws_s3_bucket.state.arn, "${aws_s3_bucket.state.arn}/*"]
-      Condition = { Bool = { "aws:SecureTransport" = "false" } }
-    }]
-  })
+# --- Image registry -----------------------------------------------------------------------
+
+resource "azurerm_container_registry" "agent" {
+  # checkov:skip=CKV_AZURE_139:Private networking needs the Premium tier (about $50 a month); admin user and anonymous pull are off, so every pull needs an Entra ID token
+  # checkov:skip=CKV_AZURE_163:Microsoft Defender for Containers is a paid plan; the pipeline scans every image with Trivy before it pushes
+  # checkov:skip=CKV_AZURE_164:Content trust needs the Premium tier; the job pulls the image by digest, which fixes its content
+  # checkov:skip=CKV_AZURE_165:Geo-replication needs the Premium tier; one-region lab
+  # checkov:skip=CKV_AZURE_166:Quarantine needs the Premium tier; the pipeline scans before it pushes
+  # checkov:skip=CKV_AZURE_167:Retention of untagged manifests needs the Premium tier; the pipeline pushes only tagged images
+  # checkov:skip=CKV_AZURE_233:Zone redundancy needs the Premium tier
+  # checkov:skip=CKV_AZURE_237:Dedicated data endpoints need the Premium tier
+  name                    = "crsentinel${local.suffix}"
+  resource_group_name     = azurerm_resource_group.bootstrap.name
+  location                = var.location
+  sku                     = "Basic"
+  admin_enabled           = false
+  anonymous_pull_enabled  = false
+  zone_redundancy_enabled = false
+  tags                    = local.tags
 }
 
-# --- Image registry ---------------------------------------------------------------------
+# --- The GitHub deploy identity -------------------------------------------------------------
 
-resource "aws_kms_key" "ecr" {
-  description             = "sentinel-agent image registry"
-  enable_key_rotation     = true
-  deletion_window_in_days = 7
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Sid       = "AccountAdmin"
-      Effect    = "Allow"
-      Principal = { AWS = "${local.arn}:iam::${local.account}:root" }
-      Action    = "kms:*"
-      Resource  = "*"
-    }]
-  })
+resource "azurerm_user_assigned_identity" "deploy" {
+  name                = "id-sentinel-deploy"
+  resource_group_name = azurerm_resource_group.bootstrap.name
+  location            = var.location
+  tags                = local.tags
 }
 
-resource "aws_ecr_repository" "agent" {
-  name                 = "sentinel-agent"
-  image_tag_mutability = "IMMUTABLE"
-  force_delete         = true
-  image_scanning_configuration { scan_on_push = true }
-  encryption_configuration {
-    encryption_type = "KMS"
-    kms_key         = aws_kms_key.ecr.arn
+# Only a workflow on this repository's main branch can sign in as the deploy identity.
+resource "azurerm_federated_identity_credential" "github_main" {
+  name                      = "github-main"
+  user_assigned_identity_id = azurerm_user_assigned_identity.deploy.id
+  issuer                    = "https://token.actions.githubusercontent.com"
+  audience                  = ["api://AzureADTokenExchange"]
+  subject = format("repo:%s@%s/%s@%s:ref:refs/heads/main", split("/", var.github_repo)[0], var.github_owner_id,
+  split("/", var.github_repo)[1], var.github_repo_id)
+}
+
+locals {
+  deploy = azurerm_user_assigned_identity.deploy.principal_id
+  # The only roles CI may grant, and only to service principals (managed identities). This is
+  # the Azure counterpart of the AWS permissions boundary: CI can create identities for the
+  # lab, but it cannot give any of them, or itself, more than these three read roles.
+  grantable = {
+    acr_pull             = "7f951dda-4ed3-4680-a7ca-43fe172d538d" # AcrPull
+    blob_data_reader     = "2a2b9908-6ea1-4ae2-8e65-a410df84e7d1" # Storage Blob Data Reader
+    log_analytics_reader = "73c42c96-874c-492b-b04d-ab87d138a893" # Log Analytics Reader
   }
+  grant_condition = <<-EOT
+    (
+     (
+      !(ActionMatches{'Microsoft.Authorization/roleAssignments/write'})
+     )
+     OR
+     (
+      @Request[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {${join(", ", values(local.grantable))}}
+      AND
+      @Request[Microsoft.Authorization/roleAssignments:PrincipalType] ForAnyOfAnyValues:StringEqualsIgnoreCase {'ServicePrincipal'}
+     )
+    )
+    AND
+    (
+     (
+      !(ActionMatches{'Microsoft.Authorization/roleAssignments/delete'})
+     )
+     OR
+     (
+      @Resource[Microsoft.Authorization/roleAssignments:RoleDefinitionId] ForAnyOfAnyValues:GuidEquals {${join(", ", values(local.grantable))}}
+      AND
+      @Resource[Microsoft.Authorization/roleAssignments:PrincipalType] ForAnyOfAnyValues:StringEqualsIgnoreCase {'ServicePrincipal'}
+     )
+    )
+  EOT
 }
 
-resource "aws_ecr_lifecycle_policy" "agent" {
-  repository = aws_ecr_repository.agent.name
-  policy = jsonencode({
-    rules = [{
-      rulePriority = 1
-      description  = "Keep the ten newest images"
-      selection    = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 10 }
-      action       = { type = "expire" }
-    }]
-  })
+# Build and run everything in the lab group, and write its blobs (seed data).
+resource "azurerm_role_assignment" "deploy_lab" {
+  for_each             = toset(["Contributor", "Storage Blob Data Contributor"])
+  scope                = azurerm_resource_group.lab.id
+  role_definition_name = each.value
+  principal_id         = local.deploy
+  principal_type       = "ServicePrincipal"
 }
 
-# --- GitHub OIDC and the deploy role ----------------------------------------------------
-
-resource "aws_iam_openid_connect_provider" "github" {
-  url            = "https://token.actions.githubusercontent.com"
-  client_id_list = ["sts.amazonaws.com"]
+# Grant the three read roles above, in the lab group and on the registry, and nothing else.
+resource "azurerm_role_assignment" "deploy_grant" {
+  for_each = {
+    lab      = azurerm_resource_group.lab.id
+    registry = azurerm_container_registry.agent.id
+  }
+  scope                = each.value
+  role_definition_name = "Role Based Access Control Administrator"
+  principal_id         = local.deploy
+  principal_type       = "ServicePrincipal"
+  condition            = local.grant_condition
+  condition_version    = "2.0"
 }
 
-# The most any role that CI creates may ever do. CI must attach it to every role it makes,
-# so a deploy cannot hand a new role more than the app and the SIEM need.
-resource "aws_iam_policy" "boundary" {
-  # checkov:skip=CKV_AWS_290:A permissions boundary is a ceiling, not a grant; each role's own policy scopes the resources
-  # checkov:skip=CKV_AWS_355:Same reason: the boundary lists actions any sentinel role may hold, and the Deny keeps S3 to sentinel-* buckets
-  name        = "gha-sentinel-boundary"
-  description = "Permissions boundary for every sentinel-* role"
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "AppAndSiem"
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject", "s3:ListBucket", "s3:GetBucketLocation", "s3:GetBucketAcl", "s3:PutObject",
-          "kms:Decrypt", "kms:GenerateDataKey", "kms:DescribeKey",
-          "logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams", "logs:DescribeLogGroups",
-          "logs:GetLogEvents", "logs:FilterLogEvents",
-          "ecr:GetAuthorizationToken", "ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer",
-          "ecr:BatchCheckLayerAvailability",
-          "ssm:UpdateInstanceInformation", "ssm:ListInstanceAssociations", "ssm:DescribeInstanceProperties",
-          "ssm:GetDocument", "ssm:DescribeDocument", "ssm:ListAssociations", "ssm:GetManifest",
-          "ssm:PutInventory", "ssm:PutComplianceItems", "ssm:UpdateInstanceAssociationStatus",
-          "ssmmessages:CreateControlChannel", "ssmmessages:CreateDataChannel",
-          "ssmmessages:OpenControlChannel", "ssmmessages:OpenDataChannel",
-          "ec2messages:AcknowledgeMessage", "ec2messages:DeleteMessage", "ec2messages:FailMessage",
-          "ec2messages:GetEndpoint", "ec2messages:GetMessages", "ec2messages:SendReply",
-          "sts:GetCallerIdentity",
-        ]
-        Resource = "*"
-      },
-      {
-        Sid         = "OnlyLabBuckets"
-        Effect      = "Deny"
-        Action      = ["s3:GetObject", "s3:ListBucket", "s3:PutObject"]
-        NotResource = ["${local.arn}:s3:::${local.scope}*", "${local.arn}:s3:::${local.scope}*/*"]
-      },
+resource "azurerm_role_assignment" "deploy_push" {
+  scope                = azurerm_container_registry.agent.id
+  role_definition_name = "AcrPush"
+  principal_id         = local.deploy
+  principal_type       = "ServicePrincipal"
+}
+
+resource "azurerm_role_assignment" "deploy_state" {
+  scope                = azurerm_storage_container.state.id
+  role_definition_name = "Storage Blob Data Contributor"
+  principal_id         = local.deploy
+  principal_type       = "ServicePrincipal"
+}
+
+# The subscription's activity log (management events, the CloudTrail counterpart) can be sent
+# to the lab's workspace only by a diagnostic setting on the subscription itself. This role
+# allows that and nothing else at subscription scope.
+resource "azurerm_role_definition" "activity_export" {
+  name        = "sentinel-activity-log-export"
+  scope       = local.sub
+  description = "Manage the subscription's diagnostic settings, for the sentinel-agent lab"
+  permissions {
+    actions = [
+      "Microsoft.Insights/diagnosticSettings/read",
+      "Microsoft.Insights/diagnosticSettings/write",
+      "Microsoft.Insights/diagnosticSettings/delete",
     ]
-  })
+  }
+  assignable_scopes = [local.sub]
 }
 
-data "aws_iam_policy_document" "deploy_trust" {
-  statement {
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-    principals {
-      type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.github.arn]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-    # Only a workflow on main may deploy. Pull requests and other branches get no AWS access.
-    condition {
-      test     = "StringEquals"
-      variable = "token.actions.githubusercontent.com:sub"
-      values = [format("repo:%s@%s/%s@%s:ref:refs/heads/main", split("/", var.github_repo)[0], var.github_owner_id,
-      split("/", var.github_repo)[1], var.github_repo_id)]
-    }
-  }
+resource "azurerm_role_assignment" "deploy_activity" {
+  scope              = local.sub
+  role_definition_id = azurerm_role_definition.activity_export.role_definition_resource_id
+  principal_id       = local.deploy
+  principal_type     = "ServicePrincipal"
 }
 
-resource "aws_iam_role" "deploy" {
-  name                 = "gha-sentinel-deploy"
-  assume_role_policy   = data.aws_iam_policy_document.deploy_trust.json
-  max_session_duration = 3600
-}
-
-data "aws_iam_policy_document" "deploy" {
-  statement {
-    sid       = "State"
-    actions   = ["s3:ListBucket", "s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
-    resources = [aws_s3_bucket.state.arn, "${aws_s3_bucket.state.arn}/*"]
-  }
-  statement {
-    sid       = "StateKey"
-    actions   = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
-    resources = [aws_kms_key.state.arn]
-  }
-  statement {
-    sid = "PushImage"
-    actions = ["ecr:BatchCheckLayerAvailability", "ecr:InitiateLayerUpload", "ecr:UploadLayerPart",
-      "ecr:CompleteLayerUpload", "ecr:PutImage", "ecr:BatchGetImage", "ecr:DescribeImages",
-    "ecr:DescribeRepositories", "ecr:GetDownloadUrlForLayer"]
-    resources = [aws_ecr_repository.agent.arn]
-  }
-  statement {
-    sid       = "PushImageKey"
-    actions   = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey", "kms:DescribeKey"]
-    resources = [aws_kms_key.ecr.arn]
-  }
-  statement {
-    sid       = "RegistryLogin"
-    actions   = ["ecr:GetAuthorizationToken", "sts:GetCallerIdentity"]
-    resources = ["*"]
-  }
-  # The main stack's services, in this one region.
-  statement {
-    sid = "Services"
-    actions = ["ec2:*", "ecs:*", "cloudtrail:*", "logs:*", "kms:*", "ssm:GetParameter", "ssm:GetParameters",
-    "elasticloadbalancing:Describe*", "application-autoscaling:Describe*", "cloudwatch:*"]
-    resources = ["*"]
-    condition {
-      test     = "StringEquals"
-      variable = "aws:RequestedRegion"
-      values   = [var.region]
-    }
-  }
-  statement {
-    sid       = "LabBuckets"
-    actions   = ["s3:CreateBucket", "s3:Get*", "s3:List*", "s3:Put*", "s3:Delete*"]
-    resources = ["${local.arn}:s3:::${local.scope}*", "${local.arn}:s3:::${local.scope}*/*"]
-  }
-  statement {
-    sid       = "ListBuckets"
-    actions   = ["s3:ListAllMyBuckets"]
-    resources = ["*"]
-  }
-  # Roles: only sentinel-* roles, and only with the boundary attached.
-  statement {
-    sid = "CreateBoundedRoles"
-    actions = ["iam:CreateRole", "iam:PutRolePermissionsBoundary", "iam:AttachRolePolicy",
-    "iam:DetachRolePolicy", "iam:PutRolePolicy", "iam:DeleteRolePolicy"]
-    resources = ["${local.arn}:iam::${local.account}:role/${local.scope}*"]
-    condition {
-      test     = "StringEquals"
-      variable = "iam:PermissionsBoundary"
-      values   = [aws_iam_policy.boundary.arn]
-    }
-  }
-  statement {
-    sid = "ManageScopedIam"
-    actions = ["iam:GetRole", "iam:GetRolePolicy", "iam:ListRolePolicies", "iam:ListAttachedRolePolicies",
-      "iam:ListInstanceProfilesForRole", "iam:DeleteRole", "iam:TagRole", "iam:UntagRole",
-      "iam:UpdateAssumeRolePolicy", "iam:UpdateRole", "iam:UpdateRoleDescription",
-      "iam:CreateInstanceProfile", "iam:DeleteInstanceProfile", "iam:GetInstanceProfile",
-      "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile", "iam:TagInstanceProfile",
-      "iam:CreatePolicy", "iam:DeletePolicy", "iam:GetPolicy", "iam:GetPolicyVersion",
-      "iam:CreatePolicyVersion", "iam:DeletePolicyVersion", "iam:ListPolicyVersions", "iam:TagPolicy",
-    "iam:ListEntitiesForPolicy"]
-    resources = ["${local.arn}:iam::${local.account}:role/${local.scope}*",
-      "${local.arn}:iam::${local.account}:instance-profile/${local.scope}*",
-    "${local.arn}:iam::${local.account}:policy/${local.scope}*"]
-  }
-  statement {
-    sid       = "ReadBoundary"
-    actions   = ["iam:GetPolicy", "iam:GetPolicyVersion"]
-    resources = [aws_iam_policy.boundary.arn, "${local.arn}:iam::aws:policy/*"]
-  }
-  statement {
-    sid       = "PassScopedRoles"
-    actions   = ["iam:PassRole"]
-    resources = ["${local.arn}:iam::${local.account}:role/${local.scope}*"]
-    condition {
-      test     = "StringEquals"
-      variable = "iam:PassedToService"
-      values   = ["ecs-tasks.amazonaws.com", "ec2.amazonaws.com", "cloudtrail.amazonaws.com", "vpc-flow-logs.amazonaws.com"]
-    }
-  }
-  statement {
-    sid       = "EcsServiceLinkedRole"
-    actions   = ["iam:CreateServiceLinkedRole"]
-    resources = ["*"]
-    condition {
-      test     = "StringEquals"
-      variable = "iam:AWSServiceName"
-      values   = ["ecs.amazonaws.com"]
-    }
-  }
-  statement {
-    sid    = "NeverTouchTheBoundary"
-    effect = "Deny"
-    actions = ["iam:DeleteRolePermissionsBoundary", "iam:CreatePolicyVersion", "iam:DeletePolicy",
-    "iam:SetDefaultPolicyVersion"]
-    resources = [aws_iam_policy.boundary.arn, "${local.arn}:iam::${local.account}:role/gha-*",
-    "${local.arn}:iam::${local.account}:policy/gha-*"]
-  }
-}
-
-resource "aws_iam_role_policy" "deploy" {
-  name   = "gha-sentinel-deploy"
-  role   = aws_iam_role.deploy.id
-  policy = data.aws_iam_policy_document.deploy.json
+# One Network Watcher per region per subscription. Azure creates one in NetworkWatcherRG the
+# first time a virtual network appears, outside CI's reach. Creating it here first, in the lab
+# group, lets CI attach VNet flow logs to it.
+resource "azurerm_network_watcher" "lab" {
+  name                = "nw-sentinel-${var.location}"
+  resource_group_name = azurerm_resource_group.lab.name
+  location            = var.location
+  tags                = local.tags
 }

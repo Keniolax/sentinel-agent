@@ -16,14 +16,12 @@ def main(argv=None):
     if argv[:1] == ["ask"] and len(argv) == 2:
         import os
 
-        import boto3
-
         from .agent import ask
         from .model import Ollama
         from .tools import from_env
 
         # RUN_ID lets the caller trace one run from the question to the SIEM.
-        print(ask(argv[1], Ollama(), from_env(boto3.client("s3")), run_id=os.environ.get("RUN_ID") or None))
+        print(ask(argv[1], Ollama(), from_env(), run_id=os.environ.get("RUN_ID") or None))
         return 0
     print(__doc__, file=sys.stderr)
     return 2

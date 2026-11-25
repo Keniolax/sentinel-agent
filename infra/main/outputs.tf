@@ -1,9 +1,6 @@
-output "cluster" { value = aws_ecs_cluster.lab.name }
-output "task_definition" { value = aws_ecs_task_definition.agent.arn }
-output "subnets" { value = aws_subnet.public[*].id }
-output "agent_security_group" { value = aws_security_group.agent.id }
-output "kb_bucket" { value = aws_s3_bucket.b["kb"].id }
-output "finance_bucket" { value = aws_s3_bucket.b["finance"].id }
-output "trail_bucket" { value = aws_s3_bucket.b["trail"].id }
-output "agent_log_group" { value = aws_cloudwatch_log_group.agent.name }
-output "siem_instance_id" { value = aws_instance.siem.id }
+output "resource_group" { value = local.rg }
+output "job_name" { value = azurerm_container_app_job.agent.name }
+output "workspace_id" { value = azurerm_log_analytics_workspace.lab.workspace_id }
+output "data_account" { value = azurerm_storage_account.data.name }
+output "siem_vm_name" { value = azurerm_linux_virtual_machine.siem.name }
+output "agent_principal_id" { value = azurerm_user_assigned_identity.agent.principal_id }

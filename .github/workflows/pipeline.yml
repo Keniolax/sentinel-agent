@@ -1,9 +1,9 @@
 name: pipeline
 
 # Every push and pull request runs the gate. Only a push to main builds the image and
-# deploys, and only after the gate passes. The deploy jobs get short-lived AWS credentials
-# through GitHub's OIDC token; the repository stores no AWS key. The gate holds no AWS
-# access at all.
+# deploys, and only after the gate passes. The deploy jobs sign in to Azure as a managed
+# identity with GitHub's OIDC token; the repository stores no Azure secret. The gate holds
+# no Azure access at all.
 
 on:
   pull_request:
@@ -19,7 +19,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  AWS_REGION: us-east-1
+  AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
   TERRAFORM_VERSION: "1.14.1"
   CHECKOV_VERSION: "3.3.30"
   SEMGREP_VERSION: "1.183.0"
@@ -75,7 +77,7 @@ jobs:
         run: |
           pip install --quiet "semgrep==${SEMGREP_VERSION}"
           semgrep scan --config p/python --config p/dockerfile --disable-nosem \
-            --metrics off --error --timeout 30 app image scripts
+            --metrics off --error --timeout 30 app image scripts siem
 
       - name: Gitleaks over the whole history (hard fail)
         run: |
@@ -96,44 +98,58 @@ jobs:
       id-token: write
     outputs:
       image: ${{ steps.push.outputs.image }}
+    env:
+      ACR: ${{ vars.ACR_NAME }}
+      REPO: ${{ vars.ACR_LOGIN_SERVER }}/sentinel-agent
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Build the image
+      - name: Tag from the image's inputs
+        id: tag
         run: |
-          docker build --platform linux/amd64 -f image/Dockerfile -t "sentinel-agent:${GITHUB_SHA}" .
-          docker image ls "sentinel-agent:${GITHUB_SHA}"
+          # The tag hashes every file that goes into the image. A commit that changes only
+          # Terraform or docs reuses the image already built, and tags never need overwriting.
+          tag="src-$(git ls-files -s app image requirements.lock pyproject.toml | sha256sum | cut -c1-16)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "image tag $tag"
+      - name: Azure sign-in as the deploy identity
+        run: scripts/gha-azure-login.sh
+      - name: Is this image already built?
+        id: have
+        run: |
+          if az acr repository show --name "$ACR" --image "sentinel-agent:${{ steps.tag.outputs.tag }}" -o none 2>/dev/null; then
+            echo "found=true" >> "$GITHUB_OUTPUT"; echo "already in the registry"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build the image
+        if: steps.have.outputs.found == 'false'
+        run: |
+          docker build --platform linux/amd64 -f image/Dockerfile -t "$REPO:${{ steps.tag.outputs.tag }}" .
+          docker image ls "$REPO:${{ steps.tag.outputs.tag }}"
           df -h / /mnt
       - name: Trivy image scan (hard fail on fixable high and critical)
         run: |
           # The image holds the model (about 1 GB). Trivy unpacks it to a temporary file,
-          # which overflows the runner's root disk, so it works on /mnt instead.
+          # which overflows the runner's root disk, so it works on /mnt instead. An image built
+          # earlier is pulled from the registry and scanned again with today's database.
           sudo mkdir -p /mnt/trivy && sudo chown "$USER" /mnt/trivy
           export TMPDIR=/mnt/trivy
           ./scripts/install-trivy.sh "$HOME/.local/bin"
-          "$HOME/.local/bin/trivy" image --cache-dir /mnt/trivy/cache --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
-            --ignorefile image/.trivyignore "sentinel-agent:${GITHUB_SHA}"
-      - name: AWS credentials for the deploy role
-        run: scripts/gha-aws-login.sh "${{ vars.DEPLOY_ROLE_ARN }}"
-      - name: Push by digest
+          az acr login --name "$ACR"
+          src=docker; [ "${{ steps.have.outputs.found }}" = true ] && src=remote
+          "$HOME/.local/bin/trivy" image --image-src "$src" --cache-dir /mnt/trivy/cache --severity HIGH,CRITICAL \
+            --ignore-unfixed --exit-code 1 --ignorefile image/.trivyignore "$REPO:${{ steps.tag.outputs.tag }}"
+      - name: Push, and resolve the digest
         id: push
-        env:
-          REPO: ${{ vars.ECR_REPOSITORY_URL }}
         run: |
-          # Tags are immutable. A re-run of the same commit deploys the image already pushed
-          # for it instead of overwriting the tag.
-          if ! aws ecr describe-images --repository-name sentinel-agent --image-ids imageTag="${GITHUB_SHA}" >/dev/null 2>&1; then
-            aws ecr get-login-password | docker login --username AWS --password-stdin "${REPO%%/*}"
-            docker tag "sentinel-agent:${GITHUB_SHA}" "$REPO:${GITHUB_SHA}"
-            docker push "$REPO:${GITHUB_SHA}"
-          else
-            echo "tag ${GITHUB_SHA} already in the registry; deploying that image"
+          if [ "${{ steps.have.outputs.found }}" = false ]; then
+            docker push "$REPO:${{ steps.tag.outputs.tag }}"
           fi
-          digest="$(aws ecr describe-images --repository-name sentinel-agent --image-ids imageTag="${GITHUB_SHA}" \
-            --query 'imageDetails[0].imageDigest' --output text)"
+          digest="$(az acr manifest show-metadata --registry "$ACR" --name "sentinel-agent:${{ steps.tag.outputs.tag }}" --query digest -o tsv)"
           echo "image=$REPO@$digest" >> "$GITHUB_OUTPUT"
-          echo "pushed $REPO@$digest"
+          echo "deploying $REPO@$digest"
 
   deploy:
     needs: build
@@ -153,14 +169,22 @@ jobs:
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
-      - name: AWS credentials for the deploy role
-        run: scripts/gha-aws-login.sh "${{ vars.DEPLOY_ROLE_ARN }}"
+      - name: Azure sign-in as the deploy identity
+        run: scripts/gha-azure-login.sh
       - name: Terraform apply
         env:
+          # The azurerm provider and backend fetch their own OIDC token from GitHub.
+          ARM_USE_OIDC: "true"
+          ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          TF_VAR_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           TF_VAR_agent_image: ${{ needs.build.outputs.image }}
-          TF_VAR_boundary_policy_arn: ${{ vars.BOUNDARY_POLICY_ARN }}
+          TF_VAR_acr_id: ${{ vars.ACR_ID }}
+          TF_VAR_lab_resource_group: ${{ vars.LAB_RESOURCE_GROUP }}
+          TF_VAR_network_watcher_name: ${{ vars.NETWORK_WATCHER_NAME }}
         run: |
           terraform -chdir=infra/main init -input=false \
-            -backend-config="bucket=${{ vars.STATE_BUCKET }}" \
-            -backend-config="kms_key_id=${{ vars.STATE_KMS_KEY }}"
+            -backend-config="resource_group_name=${{ vars.STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.STATE_STORAGE_ACCOUNT }}"
           terraform -chdir=infra/main apply -input=false -auto-approve
