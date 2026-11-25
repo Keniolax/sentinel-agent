@@ -41,4 +41,9 @@ resource "azurerm_monitor_diagnostic_setting" "jobs" {
   log_analytics_destination_type = "Dedicated"
   enabled_log { category = "ContainerAppConsoleLogs" }
   enabled_log { category = "ContainerAppSystemLogs" }
+  lifecycle {
+    # The API does not return this field for a Container Apps environment, so every plan
+    # showed a change. The rows do land in the dedicated ContainerAppConsoleLogs table.
+    ignore_changes = [log_analytics_destination_type]
+  }
 }

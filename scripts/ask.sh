@@ -33,7 +33,7 @@ echo "execution $status"
 # execution never writes an answer line, so wait less for it.
 tries=30; [ "$status" = Succeeded ] || tries=6
 for _ in $(seq 1 "$tries"); do
-  lines="$(la_query "ContainerAppConsoleLogs | where Log has '$run_id' | order by TimeGenerated asc | project Log")"
+  lines="$(la_query "ContainerAppConsoleLogs | where ContainerGroupName startswith '$execution-' | order by TimeGenerated asc | project Log")"
   if python3 -c '
 import json, sys
 logs = [json.loads(line)["Log"] for line in sys.stdin if line.strip()]
