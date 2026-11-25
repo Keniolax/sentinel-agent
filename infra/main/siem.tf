@@ -47,6 +47,7 @@ resource "azurerm_linux_virtual_machine" "siem" {
   encryption_at_host_enabled      = true
   secure_boot_enabled             = true
   vtpm_enabled                    = true
+  disk_controller_type            = "NVMe"
 
   # Azure requires an admin key. Its private half was deleted when it was made, and the NSG
   # blocks port 22, so nobody can sign in with it.

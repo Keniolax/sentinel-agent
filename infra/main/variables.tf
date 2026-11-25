@@ -33,11 +33,12 @@ variable "network_watcher_name" {
 }
 
 variable "siem_vm_size" {
-  # Wazuh's indexer and manager need about 8 GB of memory. Standard_B2ms had no capacity in
-  # eastus2 on 2026-11-25 (SkuNotAvailable); B2as_v2 has the same 2 vCPUs and 8 GB.
-  description = "VM size for the SIEM: 2 vCPUs and 8 GB"
+  # Wazuh's indexer and manager need about 8 GB of memory. On 2026-11-25 eastus2 refused
+  # B2ms, B2as_v2, B2s_v2, D2as_v5 and D2s_v5 for this subscription (SkuNotAvailable, a
+  # capacity limit); a probe VM in D2as_v6 was accepted. D2as_v6 attaches disks only by NVMe.
+  description = "VM size for the SIEM: 2 vCPUs and 8 GB, with an NVMe disk controller"
   type        = string
-  default     = "Standard_B2as_v2"
+  default     = "Standard_D2as_v6"
 }
 
 variable "home_soc_lab_ref" {
