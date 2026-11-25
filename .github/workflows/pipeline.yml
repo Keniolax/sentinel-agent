@@ -58,10 +58,16 @@ jobs:
             terraform -chdir=$stack validate
           done
 
-      - name: Checkov (hard fail)
+      - name: Checkov (hard fail), with the capstone's finance-grant policy
         run: |
           pip install --quiet "checkov==${CHECKOV_VERSION}"
-          checkov -d infra --compact --quiet
+          checkov -d infra --external-checks-dir policy/checkov/checks --compact --quiet
+          # Prove the custom policy is load-bearing: on the fixtures it must fail the bad
+          # finance grant and pass the good knowledge-container grant, exactly one each.
+          got="$(checkov -d policy/checkov/fixture --external-checks-dir policy/checkov/checks \
+            --check CKV_SENTINEL_1 -o json 2>/dev/null \
+            | python3 -c 'import json,sys; o=json.load(sys.stdin); o=o[0] if isinstance(o,list) else o; r=o["results"]; print(len(r["failed_checks"]), len(r["passed_checks"]))')"
+          test "$got" = "1 1" || { echo "policy fixtures gave [$got], expected [1 1]"; exit 1; }
 
       - name: Every scanner suppression carries a reason
         run: python3 scripts/check-skips.py infra

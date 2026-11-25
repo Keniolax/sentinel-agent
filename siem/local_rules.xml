@@ -1,5 +1,9 @@
-<!-- Week 18: rules that show the capstone's logs reached the SIEM. Week 19 adds detections. -->
+<!-- Week 18: rules that show the capstone's logs reached the SIEM.
+     Week 19: detections that fire on each step of the attack chain, and rank a blocked or
+     successful read of the finance container above an ordinary read. -->
 <group name="sentinel,azure,">
+
+  <!-- Week 18. An ordinary blob read on the data account, and any agent event. -->
   <rule id="100810" level="3">
     <decoded_as>json</decoded_as>
     <field name="sentinel_source">^storage$</field>
@@ -12,4 +16,51 @@
     <field name="sentinel.app">^sentinel-agent$</field>
     <description>Sentinel: agent event $(sentinel.event) in run $(sentinel.run_id)</description>
   </rule>
+
+  <!-- Week 19, step A/B. Any access to the finance container. A read of the payroll file is
+       the attacker's goal, so even a blocked attempt is high, not level 3 as in week 18. -->
+  <rule id="100820" level="12">
+    <if_sid>100810</if_sid>
+    <field name="ObjectKey">/finance/</field>
+    <description>Sentinel ATTACK: access to the finance container ($(OperationName) $(StatusText) $(ObjectKey))</description>
+    <mitre><id>T1530</id></mitre>
+  </rule>
+  <rule id="100821" level="14">
+    <if_sid>100820</if_sid>
+    <field name="StatusCode">^200$|^206$</field>
+    <description>Sentinel ATTACK: the finance file was READ, status $(StatusCode), by $(RequesterObjectId)</description>
+    <mitre><id>T1530</id></mitre>
+  </rule>
+
+  <!-- Week 19, step A. The agent's own tool call reached a key outside the knowledge base. The
+       real agent never does this; the weak twin does when its key check is gone. -->
+  <rule id="100822" level="13">
+    <if_sid>100811</if_sid>
+    <field name="sentinel.event">^tool_call$</field>
+    <field name="sentinel.key">^finance/</field>
+    <description>Sentinel ATTACK: the agent read a non-kb key ($(sentinel.key)) in run $(sentinel.run_id)</description>
+    <mitre><id>T1530</id></mitre>
+  </rule>
+
+  <!-- Week 19, step C. Run Command on a lab VM. This also fires on an operator's own Run
+       Command (verify-siem.sh), so it is a lead to tune by caller, not a certain attack. -->
+  <rule id="100823" level="10">
+    <decoded_as>json</decoded_as>
+    <field name="sentinel_source">^activity$</field>
+    <field name="OperationNameValue">runCommand</field>
+    <description>Sentinel: Run Command on a VM by $(Caller) ($(OperationNameValue) $(ActivityStatusValue))</description>
+    <mitre><id>T1078.004</id></mitre>
+  </rule>
+
+  <!-- Week 19, step C. A role assignment written at the finance container's scope. A normal
+       deploy grants on the knowledge container, the registry or the workspace, never here. -->
+  <rule id="100824" level="13">
+    <decoded_as>json</decoded_as>
+    <field name="sentinel_source">^activity$</field>
+    <field name="OperationNameValue">roleAssignments/write</field>
+    <field name="ResourceId">/containers/finance/</field>
+    <description>Sentinel ATTACK: a role was granted on the finance container by $(Caller)</description>
+    <mitre><id>T1098</id></mitre>
+  </rule>
+
 </group>
