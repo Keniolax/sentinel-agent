@@ -17,7 +17,7 @@ shipped lab and once against a weakened copy that the attack script creates and 
 | Step | Technique | Weakened lab | Shipped lab | Detection that fired |
 |---|---|---|---|---|
 | A. A help article tells the model to read the payroll | Prompt injection (OWASP LLM01), Tool Misuse (OWASP ASI02), Excessive Agency (LLM06) | The tool takes the finance path | The tool's key check refuses any key outside `kb/` | 100822 on the attack run, and none on the normal run |
-| B. The agent reads the payroll and prints it | Data from Cloud Storage (ATT&CK T1530) | `206 Partial Content`, the file leaves through the console log | `403 AuthorizationPermissionMismatch` | 100820 on both reads, 100821 (level 14) on the successful one |
+| B. The agent reads the payroll and prints it | Data from Cloud Storage (ATT&CK T1530) | `206 Partial Content`, the file leaves through the console log | `403 AuthorizationPermissionMismatch` | 100820 on the refused read, 100821 (level 14) on the successful one |
 | C. A foothold in the cloud | Run Command (T1078.004), a role granted on the payroll container (T1098) | The temporary grant succeeds | `CKV_SENTINEL_1` fails CI on any such grant in Terraform | 100823 on Run Command, 100824 on the grant |
 
 The SIEM's alert counts for that run were `100820=2 100821=2 100822=1 (0 on the normal run)

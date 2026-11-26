@@ -41,7 +41,7 @@ while :; do
     echo
     echo "PASS — attack chain to detection:"
     echo "  A inject + tool misuse   rule 100822 fired on an attack run ($d2a), quiet on production ($d2p)"
-    echo "  B finance read (exfil)   rule 100820 any access ($d1), rule 100821 successful read ($d1s)"
+    echo "  B finance read (exfil)   rule 100820 refused/other access ($d1), rule 100821 successful read ($d1s)"
     echo "  C Run Command            rule 100823 ($d3)"
     echo "  C role-assignment abuse  rule 100824 on the finance grant ($d4)"
     exit 0
