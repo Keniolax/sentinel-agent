@@ -4,7 +4,7 @@ import json
 import random
 from pathlib import Path
 
-random.seed(18)
+random.seed(20)
 CARBON, BLUE, PURPLE, EMERALD, AMBER, ROSE, CYAN = (
     "#171717", "#0070f3", "#7928ca", "#10b981", "#f59e0b", "#ef4444", "#06b6d4")
 TINT = {BLUE: "#e6f0ff", PURPLE: "#f3e8ff", EMERALD: "#e7f8f2", AMBER: "#fff4e0", ROSE: "#fdecec",
@@ -59,23 +59,23 @@ def arrow(x1, y1, x2, y2, color="#525252", dashed=False):
 
 
 GREY = "#404040"
-text(40, 24, "sentinel-agent: an AI support agent on Azure, watched by a SIEM", 28)
-text(40, 64, "One job execution answers one question. Two locks guard the payroll file. Every step reaches Wazuh.", 15, GREY)
+text(40, 24, "sentinel-agent: an AI support agent on Azure, attacked and caught", 28)
+text(40, 64, "One job execution answers one question. Two locks guard the payroll file. Every attack step reaches Wazuh.", 15, GREY)
 
 # GitHub
-zone(40, 110, 1200, 120, BLUE, "GitHub Actions: main only, signs in with a federated credential (no stored secret)")
-box(60, 145, 340, 70, BLUE, "Gate", "tests, Checkov, Trivy, Semgrep, Gitleaks")
-box(440, 145, 340, 70, BLUE, "Build", "image tag = hash of its inputs; Trivy scan")
-box(820, 145, 400, 70, BLUE, "Deploy", "terraform apply as id-sentinel-deploy")
-arrow(404, 180, 436, 180, BLUE)
-arrow(784, 180, 816, 180, BLUE)
+zone(40, 110, 1200, 136, BLUE, "GitHub Actions: main only, signs in with a federated credential (no stored secret)")
+box(60, 145, 340, 86, BLUE, "Gate", "tests, Checkov + CKV_SENTINEL_1,\nTrivy, Semgrep, Gitleaks")
+box(440, 145, 340, 86, BLUE, "Build", "image tag = hash of its inputs; Trivy scan")
+box(820, 145, 400, 86, BLUE, "Deploy", "terraform apply as id-sentinel-deploy")
+arrow(404, 188, 436, 188, BLUE)
+arrow(784, 188, 816, 188, BLUE)
 
 # Bootstrap group
 zone(40, 260, 300, 175, PURPLE, "rg-sentinel-bootstrap")
 box(60, 290, 260, 62, PURPLE, "Registry (ACR)", "image by digest")
 box(60, 362, 260, 62, PURPLE, "Terraform state", "Entra ID only, no keys")
-arrow(610, 219, 300, 291, BLUE)
-arrow(1020, 219, 1020, 256, BLUE)
+arrow(610, 235, 300, 291, BLUE)
+arrow(1020, 235, 1020, 256, BLUE)
 
 # Lab group
 zone(370, 260, 870, 560, EMERALD, "rg-sentinel-lab: CI is Contributor here and may grant only 3 read roles")
@@ -99,8 +99,8 @@ text(1045, 495, "resource logs", 13, GREY)
 zone(390, 560, 420, 240, AMBER, "snet-siem: no inbound port at all")
 box(410, 600, 380, 80, AMBER, "Collector (every minute)",
     "managed identity -> Log Analytics API\n-> /var/log/sentinel/azure.json")
-box(410, 700, 380, 80, AMBER, "Wazuh 4.14 manager + indexer",
-    "rules 100810 (blob read), 100811 (agent event)")
+box(410, 700, 380, 90, AMBER, "Wazuh 4.14 manager + indexer",
+    "100810-100811: blob read, agent event\n100820-100824: the attack rules")
 arrow(846, 600, 794, 630, GREY)
 arrow(600, 684, 600, 696, AMBER)
 
@@ -110,6 +110,15 @@ box(60, 495, 260, 90, CARBON, "scripts/ask.sh", "start one execution\nwith QUEST
 box(60, 605, 260, 90, CARBON, "scripts/verify-siem.sh", "Run Command: grep Wazuh\nfor the run and its reads")
 arrow(324, 540, 406, 430, GREY)
 arrow(324, 650, 406, 740, GREY)
+
+# Week 19: the attack chain and what caught it
+zone(40, 850, 1200, 190, ROSE, "Attack chain (run against this lab only), and what stops or catches each step")
+box(60, 885, 370, 135, ROSE, "A. Poisoned help article",
+    "prompt injection (LLM01) tells the model\nto read the payroll: tool misuse (ASI02)\nblocked: lock 1, the tool's key check\ncaught: 100822 on a finance tool call")
+box(455, 885, 370, 135, ROSE, "B. Read and leak the payroll",
+    "data from cloud storage (T1530)\nblocked: lock 2, RBAC -> 403\ncaught: 100820 any finance access,\n100821 a successful read (level 14)")
+box(850, 885, 370, 135, ROSE, "C. Cloud foothold",
+    "Run Command on a VM (T1078.004),\nrole grant on finance (T1098)\ncaught: 100823, 100824\nblocked in CI: CKV_SENTINEL_1")
 
 doc = {"type": "excalidraw", "version": 2, "source": "sentinel-agent", "elements": els,
        "appState": {"gridSize": None, "viewBackgroundColor": "#ffffff"}, "files": {}}
